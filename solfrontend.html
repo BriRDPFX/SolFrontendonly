@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Solana Wallet Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/@solana/web3.js/1.73.0/solana-web3.min.js"></script>
+<style>
+body {
+font-family: Arial, sans-serif;
+margin: 0;
+padding: 0;
+background-color: #f4f4f9;
+}
+header {
+background-color: #333;
+color: white;
+padding: 1rem;
+text-align: center;
+}
+main {
+max-width: 1200px;
+margin: 20px auto;
+padding: 20px;
+background: white;
+border-radius: 8px;
+box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.form-group {
+margin-bottom: 1rem;
+}
+.form-group label {
+display: block;
+font-weight: bold;
+margin-bottom: 0.5rem;
+}
+.form-group input, .form-group button {
+width: 100%;
+padding: 0.5rem;
+margin: 0.2rem 0;
+font-size: 1rem;
+}
+table {
+width: 100%;
+margin-top: 1rem;
+border-collapse: collapse;
+}
+table th, table td {
+border: 1px solid #ddd;
+padding: 8px;
+text-align: left;
+}
+table th {
+background-color: #f4f4f4;
+}
+.profile-section, .live-events, .tracked-wallets {
+margin-top: 20px;
+}
+.links a {
+margin-right: 10px;
+text-decoration: none;
+color: #007bff;
+}
+.links a:hover {
+text-decoration: underline;
+}
+</style>
+</head>
+<body>
+<header>
+<h1>Solana Wallet Tracker</h1>
+</header>
+<main>
+<!-- Add Wallet Section -->
+<div class="form-section">
+<h2>Add Wallet to Track</h2>
+<form id="addWalletForm">
+<div class="form-group">
+<label for="walletAddress">Wallet Address</label>
+<input type="text" id="walletAddress" placeholder="Enter wallet address" required>
+</div>
+<div class="form-group">
+<label for="minTransfer">Minimum Transfer Amount (SOL)</label>
+<input type="number" id="minTransfer" placeholder="Enter minimum amount" required>
+</div>
+<button type="submit">Track Wallet</button>
+</form>
+</div>
+
+<!-- Profiles Section -->
+<div class="profile-section">
+<h2>Profiles</h2>
+<div id="profiles"></div>
+</div>
+
+<!-- Live Events Section -->
+<div class="live-events">
+<h2>Live Events</h2>
+<table>
+<thead>
+<tr>
+<th>Profile</th>
+<th>Wallet</th>
+<th>Transaction</th>
+<th>Amount (SOL)</th>
+<th>Token</th>
+<th>Links</th>
+</tr>
+</thead>
+<tbody id="liveEventsTable">
+</tbody>
+</table>
+</div>
+
+<!-- Tracked Wallets Section -->
+<div class="tracked-wallets">
+<h2>Tracked Wallets</h2>
+<table>
+<thead>
+<tr>
+<th>Wallet Address</th>
+<th>Group</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody id="trackedWalletsTable">
+</tbody>
+</table>
+</div>
+</main>
+
+<script>
+const { Connection, PublicKey } = solanaWeb3;
+const connection = new Connection("https://api.mainnet-beta.solana.com");
+
+const wallets = []; // Stores tracked wallets
+const walletGroups = new Map(); // Tracks groups of wallets
+const profiles = {}; // Stores profiles
+const liveEvents = []; // Stores live events
+
+const addWalletForm = document.getElementById("addWalletForm");
+const liveEventsTable = document.getElementById("liveEventsTable");
+const trackedWalletsTable = document.getElementById("trackedWalletsTable");
+
+// Add Wallet Form Submission
+addWalletForm.addEventListener("submit", async (e) => {
+e.preventDefault();
+const walletAddress = document.getElementById("walletAddress").value;
+const minTransfer = parseFloat(document.getElementById("minTransfer").value);
+
+try {
+const publicKey = new PublicKey(walletAddress);
+await connection.getAccountInfo(publicKey);
+
+// Add wallet to tracked wallets
+wallets.push({ walletAddress, minTransfer, status: "Pending Mint" });
+walletGroups.set(walletAddress, new Set([walletAddress])); // Initialize wallet group
+
+// Fetch transactions and detect wallet grouping
+fetchWalletTransactions(walletAddress, minTransfer);
+} catch (error) {
+alert("Invalid wallet address. Please try again.");
+}
+});
+
+// Fetch Wallet Transactions and Group Wallets
+async function fetchWalletTransactions(walletAddress, minTransfer) {
+try {
+const publicKey = new PublicKey(walletAddress);
+const signatures = await connection.getConfirmedSignaturesForAddress2(publicKey, { limit: 10 });
+
+for (const sig of signatures) {
+const transaction = await connection.getParsedTransaction(sig.signature);
+if (transaction) {
+const preBalance = transaction.meta.preBalances[0];
+const postBalance = transaction.meta.postBalances[0];
+const solAmount = (preBalance - postBalance) / 1e9;
+
+if (solAmount >= minTransfer) {
+const isMint = detectMintingEvent(transaction);
+if (isMint) {
+addLiveEvent("Mint Detected", walletAddress, "Mint", solAmount, "Token Minted");
+} else {
+addLiveEvent("Transaction", walletAddress, "Transfer", solAmount, "N/A");
+}
+
+detectNewWallets(transaction);
+}
+}
+}
+} catch (error) {
+console.error("Error fetching transactions:", error);
+}
+}
+
+// Detect Minting Event
+function detectMintingEvent(transaction) {
+return transaction.transaction.message.instructions.some(
+(inst) => inst.programId.toBase58() === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+);
+}
+
+// Detect New Wallets
+function detectNewWallets(transaction) {
+const newWallets = [];
+transaction.transaction.message.accountKeys.forEach((accountKey) => {
+const wallet = accountKey.pubkey.toBase58();
+if (!walletGroups.has(wallet)) {
+newWallets.push(wallet);
+}
+});
+newWallets.forEach((newWallet) => {
+walletGroups.set(newWallet, walletGroups.get(walletAddress));
+});
+}
+
+// Add Live Event to Table
+function addLiveEvent(profile, wallet, transaction, amount, token) {
+const links = `
+<a href="https://axiom.co/${token}" target="_blank">Axiom</a>
+<a href="https://gmgn.io/${token}" target="_blank">gmgn</a>
+<a href="https://bullx.io/${token}" target="_blank">Bullx</a>
+`;
+const row = document.createElement("tr");
+row.innerHTML = `
+<td>${profile}</td>
+<td>${wallet}</td>
+<td>${transaction}</td>
+<td>${amount} SOL</td>
+<td>${token}</td>
+<td>${links}</td>
+`;
+liveEventsTable.appendChild(row);
+}
+</script>
+</body>
+</html
